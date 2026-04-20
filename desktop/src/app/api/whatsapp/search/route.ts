@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createEmbedding } from '@/lib/embedding';
-import { getWhatsAppTable } from '@/lib/vectorDb';
+import { openWhatsAppTable } from '@/lib/vectorDb';
 
 export async function POST(request: Request) {
   try {
@@ -12,12 +12,13 @@ export async function POST(request: Request) {
     }
 
     const queryVector = await createEmbedding(query);
-    const table = await getWhatsAppTable();
+    const table = await openWhatsAppTable();
+    if (!table) return NextResponse.json({ error: 'Index is empty.' }, { status: 404 });
 
     // Perform semantic vector search
     const results = await table.search(queryVector)
       .limit(5)
-      .execute();
+      .toArray();
 
     // Filter out the dummy 'init' row if it appears
     const cleanedResults = results.filter((r: any) => r.sessionId !== 'init');

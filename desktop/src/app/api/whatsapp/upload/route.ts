@@ -3,7 +3,7 @@ import db from '@/lib/db';
 import { parseWhatsAppChat } from '@/lib/whatsappParser';
 import { chunkWhatsAppMessages } from '@/lib/chunking';
 import { createEmbedding } from '@/lib/embedding';
-import { getWhatsAppTable } from '@/lib/vectorDb';
+import { getVectorDb, openWhatsAppTable } from '@/lib/vectorDb';
 
 export async function POST(request: Request) {
   try {
@@ -39,10 +39,10 @@ export async function POST(request: Request) {
     const chunks = chunkWhatsAppMessages(messages, 60);
 
     // 3. Embed chunks and save to Vector DB (LanceDB)
-    const table = await getWhatsAppTable();
     const vectorData = [];
     
-    for (const chunk of chunks) {
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
       const vector = await createEmbedding(chunk.text);
       vectorData.push({
         vector,
@@ -52,15 +52,24 @@ export async function POST(request: Request) {
         endTime: chunk.endTime,
         messageCount: chunk.messageCount
       });
+      // Optionally could chunk database insertion here if vectorData gets too large
     }
 
     if (vectorData.length > 0) {
-      await table.add(vectorData);
+      const vectorDb = await getVectorDb();
+      const tableNames = await vectorDb.tableNames();
+      
+      // Her yüklemede eski tabloyu sıfırlayalım ki yeni embedding boyutlarıyla (384, 768, vb.) çakışmasın.
+      if (tableNames.includes('whatsapp_chunks')) {
+        await vectorDb.dropTable('whatsapp_chunks');
+      }
+      
+      await vectorDb.createTable('whatsapp_chunks', vectorData);
     }
 
     return NextResponse.json({ 
       success: true, 
-      message: `Processed ${messages.length} messages, generated ${chunks.length} AI search blocks (embeddings).` 
+      message: `Processed ${messages.length} messages, generated ${chunks.length} AI search blocks using Ollama Gemma 4.` 
     });
 
   } catch (error: any) {

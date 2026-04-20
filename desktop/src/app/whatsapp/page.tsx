@@ -1,15 +1,23 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 
 export default function WhatsAppPage() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
+  
+  // Chat States
   const [query, setQuery] = useState<string>('');
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [searching, setSearching] = useState<boolean>(false);
+  const [chatLog, setChatLog] = useState<{role: 'user' | 'agent', text: string}[]>([]);
+  const [chatting, setChatting] = useState<boolean>(false);
+  
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatLog]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -44,27 +52,72 @@ export default function WhatsAppPage() {
     }
   };
 
-  const handleSearch = async (e: React.FormEvent) => {
+  const handleChat = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query) return;
+    if (!query.trim()) return;
     
-    setSearching(true);
+    const userMessage = query.trim();
+    setChatLog(prev => [...prev, { role: 'user', text: userMessage }]);
+    setQuery('');
+    setChatting(true);
+    
+    // Add empty agent message to stream into
+    setChatLog(prev => [...prev, { role: 'agent', text: '' }]);
+
     try {
-      const response = await fetch('/api/whatsapp/search', {
+      const response = await fetch('/api/whatsapp/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query })
+        body: JSON.stringify({ message: userMessage, model: 'gemma4' })
       });
-      const data = await response.json();
-      if (data.success) {
-        setSearchResults(data.results);
-      } else {
-        alert(data.error);
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to fetch chat");
+      }
+
+      if (!response.body) throw new Error("No response body");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          const chunkStr = decoder.decode(value, { stream: true });
+          
+          // Ollama sends JSON objects separated by newlines
+          const jsonChunks = chunkStr.split('\n').filter(Boolean);
+          for (const jsonStr of jsonChunks) {
+            try {
+              const parsed = JSON.parse(jsonStr);
+              if (parsed.response) {
+                setChatLog(prev => {
+                  const newLog = [...prev];
+                  const lastIndex = newLog.length - 1;
+                  newLog[lastIndex] = { 
+                      ...newLog[lastIndex], 
+                      text: newLog[lastIndex].text + parsed.response 
+                  };
+                  return newLog;
+                });
+              }
+            } catch (err) {
+               // ignore parse errors for partial chunks
+            }
+          }
+        }
       }
     } catch (err: any) {
-      alert("Search failed: " + err.message);
+      setChatLog(prev => {
+        const newLog = [...prev];
+        newLog[newLog.length - 1].text = `[Error: ${err.message}]`;
+        return newLog;
+      });
     } finally {
-      setSearching(false);
+      setChatting(false);
     }
   };
 
@@ -75,7 +128,7 @@ export default function WhatsAppPage() {
       </div>
 
       <h1 className="title">WhatsApp Module</h1>
-      <p className="subtitle">Upload your WhatsApp export and chat with your messages.</p>
+      <p className="subtitle">Upload your WhatsApp export and chat with your messages entirely locally.</p>
 
       <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
         
@@ -119,16 +172,53 @@ export default function WhatsAppPage() {
           )}
         </div>
 
-        {/* Search Section */}
-        <div className="card" style={{ flex: '1', minWidth: '300px' }}>
-          <h3 style={{ fontSize: '1.25rem', marginBottom: '1rem' }}>2. Semantic Search (RAG)</h3>
+        {/* Generative Chat Section */}
+        <div className="card" style={{ flex: '2', minWidth: '400px', display: 'flex', flexDirection: 'column', height: '600px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <h3 style={{ fontSize: '1.25rem', margin: 0 }}>2. AI Chat (RAG)</h3>
+            <span style={{ fontSize: '0.8rem', background: 'rgba(0,0,0,0.3)', padding: '4px 8px', borderRadius: '4px', color: 'var(--primary)' }}>Model: gemma4</span>
+          </div>
           
-          <form onSubmit={handleSearch} style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+          <div style={{ 
+              flex: 1, 
+              background: 'rgba(0,0,0,0.2)', 
+              borderRadius: '8px', 
+              padding: '1rem', 
+              overflowY: 'auto', 
+              marginBottom: '1rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1rem'
+            }}>
+             {chatLog.length === 0 ? (
+                <div style={{ color: 'var(--text-muted)', textAlign: 'center', margin: 'auto' }}>
+                    Aramak istediğiniz konuyu yazın. WhatsApp geçmişinizle eşleştirilip size cevap olarak dönülecektir.
+                </div>
+             ) : (
+                chatLog.map((log, i) => (
+                    <div key={i} style={{ 
+                        alignSelf: log.role === 'user' ? 'flex-end' : 'flex-start',
+                        background: log.role === 'user' ? 'var(--primary)' : 'var(--bg-hover)',
+                        color: log.role === 'user' ? '#11111b' : 'var(--text)',
+                        padding: '0.75rem 1rem',
+                        borderRadius: '12px',
+                        maxWidth: '80%',
+                        whiteSpace: 'pre-wrap',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                    }}>
+                        {log.text}
+                    </div>
+                ))
+             )}
+             <div ref={chatEndRef} />
+          </div>
+
+          <form onSubmit={handleChat} style={{ display: 'flex', gap: '0.5rem' }}>
             <input 
               type="text" 
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="What did we talk about yesterday?" 
+              placeholder="Geçen hafta proje hakkında ne konuştuk?" 
               style={{
                 flex: 1,
                 padding: '0.75rem',
@@ -139,25 +229,10 @@ export default function WhatsAppPage() {
                 outline: 'none'
               }}
             />
-            <button type="submit" className="btn btn-primary" disabled={searching || !query}>
-              {searching ? '🔍...' : 'Search'}
+            <button type="submit" className="btn btn-primary" disabled={chatting || !query.trim()}>
+              {chatting ? '...' : 'Send'}
             </button>
           </form>
-
-          {searchResults.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              {searchResults.map((res: any, i: number) => (
-                <div key={i} style={{ padding: '1rem', background: 'var(--bg)', borderRadius: '8px', borderLeft: '4px solid var(--primary)' }}>
-                  <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
-                    Match: {(res._distance * 100).toFixed(1)}% | Msgs: {res.messageCount}
-                  </div>
-                  <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.9rem' }}>
-                    {res.text.slice(0, 300)}{res.text.length > 300 ? '...' : ''}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
         
       </div>
