@@ -1,0 +1,9 @@
+__pycache__
+assistant_env
+categorized_emails.json
+credentials.json
+emails_data.json
+emails.db
+token.json
+.env
+.env.local
