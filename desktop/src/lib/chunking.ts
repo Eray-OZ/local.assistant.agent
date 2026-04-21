@@ -11,8 +11,9 @@ export interface MessageChunk {
 export function chunkWhatsAppMessages(
   messages: ParsedMessage[], 
   maxGapMinutes = 60, 
-  windowSize = 20, 
-  overlapSize = 5
+  windowSize = 10,     // Max message count per chunk
+  overlapSize = 2,
+  maxCharsPerChunk = 600  // ~100-150 tokens — optimal RAG sweet spot
 ): MessageChunk[] {
   if (messages.length === 0) return [];
 
@@ -40,6 +41,7 @@ export function chunkWhatsAppMessages(
 
   for (const msg of messages) {
     const msgDate = parseDate(msg.date);
+    const msgText = `[${msg.date}] ${msg.sender}: ${msg.content}`;
     
     if (!currentChunkParams) {
       currentChunkParams = { startTime: msgDate, endTime: msgDate, messages: [msg] };
@@ -47,26 +49,32 @@ export function chunkWhatsAppMessages(
     }
     
     const diffMinutes = (msgDate.getTime() - currentChunkParams.endTime.getTime()) / (1000 * 60);
-    
-    // Eğer zaman boşluktan küçükse VEYA pencere (window) limitine gelmediyse eklemeye devam et.
-    if (diffMinutes <= maxGapMinutes && currentChunkParams.messages.length < windowSize) {
+    const currentChars = currentChunkParams.messages.reduce((sum, m) =>
+      sum + `[${m.date}] ${m.sender}: ${m.content}`.length, 0
+    );
+
+    const withinTime    = diffMinutes <= maxGapMinutes;
+    const withinMsgCnt  = currentChunkParams.messages.length < windowSize;
+    const withinChars   = (currentChars + msgText.length) <= maxCharsPerChunk;
+
+    // Append to chunk — all three conditions must hold
+    if (withinTime && withinMsgCnt && withinChars) {
       currentChunkParams.messages.push(msg);
       currentChunkParams.endTime = msgDate;
     } else {
-      // Sınırı aştık (Ya çok fazla zaman geçti ya da mesaj bloğu çok büyüdü), bloğu kaydet.
+      // Chunk size exceeded: finalize current chunk
       finalizeChunk();
       
-      // Eğer zaman limitinden kopmadıysak ve sadece mesaja (windowSize) takıldıysak OVERLAP (Örtüşme) yap.
-      if (diffMinutes <= maxGapMinutes) {
+      // If still within time window (only size exceeded), apply overlap so context isn't lost
+      if (withinTime) {
         const overlapMsgs = currentChunkParams.messages.slice(-overlapSize);
-        // Örtüşen kısımla yeni bloğu başlat
         currentChunkParams = { 
           startTime: parseDate(overlapMsgs[0].date), 
           endTime: msgDate, 
           messages: [...overlapMsgs, msg] 
         };
       } else {
-        // Zaman çok geçmiş, sıfırdan yeni blok başlat
+        // Time gap too large: start fresh chunk with no overlap
         currentChunkParams = { startTime: msgDate, endTime: msgDate, messages: [msg] };
       }
     }
