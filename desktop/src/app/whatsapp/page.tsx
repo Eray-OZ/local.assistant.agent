@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useEffectEvent } from 'react';
 import Link from 'next/link';
 
 interface ChatSession {
@@ -12,6 +12,20 @@ interface ChatSession {
 interface ChatMessage {
   role: 'user' | 'agent';
   content: string; // db uses content, UI used text. We migrate to content.
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown error';
+}
+
+async function getResponseError(response: Response): Promise<string> {
+  try {
+    const data = await response.json();
+    if (typeof data?.details === 'string' && data.details.trim()) return data.details;
+    if (typeof data?.error === 'string' && data.error.trim()) return data.error;
+  } catch {}
+
+  return `Request failed with status ${response.status}`;
 }
 
 export default function WhatsAppPage() {
@@ -31,21 +45,7 @@ export default function WhatsAppPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // 1. Initial Load: Check DB Status & Fetch Sessions
-  useEffect(() => {
-    fetch('/api/whatsapp/status')
-      .then(res => res.json())
-      .then(data => {
-        if (data.loaded) {
-          setDbLoaded(true);
-          setDbRows(data.rows);
-          setStatus(`System Ready: Database detected with ${data.rows} chunks.`);
-        }
-      }).catch(err => console.error(err));
-
-    fetchSessions(true); // autoLoad = true on mount
-  }, []);
-
-  const fetchSessions = async (autoLoad = false) => {
+  const loadSessions = async (autoLoad = false) => {
     try {
       const res = await fetch('/api/chats?module=whatsapp');
       const data = await res.json();
@@ -58,6 +58,24 @@ export default function WhatsAppPage() {
       }
     } catch(e) { console.error('Failed to load sessions', e); }
   };
+
+  const loadInitialSessions = useEffectEvent(() => {
+    void loadSessions(true);
+  });
+
+  useEffect(() => {
+    fetch('/api/whatsapp/status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.loaded) {
+          setDbLoaded(true);
+          setDbRows(data.rows);
+          setStatus(`System Ready: Database detected with ${data.rows} chunks.`);
+        }
+      }).catch(err => console.error(err));
+
+    loadInitialSessions();
+  }, []);
 
   // 2. Load specific session messages
   const loadSession = async (id: string) => {
@@ -105,11 +123,18 @@ export default function WhatsAppPage() {
       if (response.ok) {
         setStatus(`Success: ${data.message}`);
         setDbLoaded(true);
+        try {
+          const statusRes = await fetch('/api/whatsapp/status');
+          const statusData = await statusRes.json();
+          if (statusData.loaded) {
+            setDbRows(statusData.rows);
+          }
+        } catch {}
       } else {
         setStatus(`Error: ${data.error}`);
       }
-    } catch (error: any) {
-      setStatus(`Failed to upload: ${error.message}`);
+    } catch (error: unknown) {
+      setStatus(`Failed to upload: ${getErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
@@ -140,7 +165,7 @@ export default function WhatsAppPage() {
         currentSessionId = data.session.id;
         setActiveSessionId(currentSessionId);
         // Refresh sidebar with the new session from DB
-        fetchSessions();
+        loadSessions();
       } catch(e) {
         console.error('Failed to create session', e);
         setChatting(false);
@@ -170,20 +195,23 @@ export default function WhatsAppPage() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to fetch chat");
+        throw new Error(await getResponseError(response));
       }
       if (!response.body) throw new Error("No response body");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let done = false;
+      let pending = '';
 
       while (!done) {
         const { value, done: readerDone } = await reader.read();
         done = readerDone;
         if (value) {
-          const chunkStr = decoder.decode(value, { stream: true });
-          const jsonChunks = chunkStr.split('\n').filter(Boolean);
+          pending += decoder.decode(value, { stream: true });
+          const jsonChunks = pending.split('\n');
+          pending = jsonChunks.pop() ?? '';
+
           for (const jsonStr of jsonChunks) {
             try {
               const parsed = JSON.parse(jsonStr);
@@ -196,9 +224,24 @@ export default function WhatsAppPage() {
                   return newLog;
                 });
               }
-            } catch (err) {}
+            } catch {}
           }
         }
+      }
+
+      if (pending.trim()) {
+        try {
+          const parsed = JSON.parse(pending);
+          if (parsed.response) {
+            fullAgentResponse += parsed.response;
+            setChatLog(prev => {
+              const newLog = [...prev];
+              const lastIndex = newLog.length - 1;
+              newLog[lastIndex] = { ...newLog[lastIndex], content: fullAgentResponse };
+              return newLog;
+            });
+          }
+        } catch {}
       }
 
       // Save complete Agent Message to SQLite
@@ -208,10 +251,10 @@ export default function WhatsAppPage() {
         body: JSON.stringify({ role: 'agent', content: fullAgentResponse })
       });
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       setChatLog(prev => {
         const newLog = [...prev];
-        newLog[newLog.length - 1].content = `[Error: ${err.message}]`;
+        newLog[newLog.length - 1].content = `[Error: ${getErrorMessage(err)}]`;
         return newLog;
       });
     } finally {
@@ -297,6 +340,12 @@ export default function WhatsAppPage() {
               </div>
             </div>
           )}
+
+          {status ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+              {status}
+            </div>
+          ) : null}
 
           {/* Chat Transcript */}
           <div style={{ 

@@ -1,4 +1,5 @@
 import { ParsedMessage } from './whatsappParser';
+import { parseWhatsAppDate } from './whatsappDate';
 
 export interface MessageChunk {
   sessionId: string;
@@ -20,14 +21,6 @@ export function chunkWhatsAppMessages(
   const chunks: MessageChunk[] = [];
   let currentChunkParams: { startTime: Date, endTime: Date, messages: ParsedMessage[] } | null = null;
   
-  // Helper to parse dates like "23.12.2023 14:30:15" vs "1/23/24, 10:15 AM"
-  const parseDate = (dateStr: string) => {
-    let normalized = dateStr.replace(/\./g, '/').replace(/ -/g, '');
-    const ts = Date.parse(normalized);
-    if (!isNaN(ts)) return new Date(ts);
-    return new Date(); // fallback
-  };
-
   const finalizeChunk = () => {
     if (!currentChunkParams || currentChunkParams.messages.length === 0) return;
     chunks.push({
@@ -40,7 +33,7 @@ export function chunkWhatsAppMessages(
   };
 
   for (const msg of messages) {
-    const msgDate = parseDate(msg.date);
+    const msgDate = parseWhatsAppDate(msg.date) ?? new Date(0);
     const msgText = `[${msg.date}] ${msg.sender}: ${msg.content}`;
     
     if (!currentChunkParams) {
@@ -69,7 +62,7 @@ export function chunkWhatsAppMessages(
       if (withinTime) {
         const overlapMsgs = currentChunkParams.messages.slice(-overlapSize);
         currentChunkParams = { 
-          startTime: parseDate(overlapMsgs[0].date), 
+          startTime: parseWhatsAppDate(overlapMsgs[0].date) ?? new Date(0), 
           endTime: msgDate, 
           messages: [...overlapMsgs, msg] 
         };
