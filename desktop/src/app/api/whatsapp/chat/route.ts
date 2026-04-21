@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createEmbedding } from '@/lib/embedding';
 import { openWhatsAppTable } from '@/lib/vectorDb';
-import { generateOllamaStream } from '@/lib/llm';
+import { generateOllamaStream, generateOllamaCompletion } from '@/lib/llm';
 
 export async function POST(request: Request) {
   try {
@@ -11,12 +11,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'No message provided' }, { status: 400 });
     }
 
-    // 1. Search for relevant Context in LanceDB
-    const queryVector = await createEmbedding(message);
+    // 1. Agentic RAG: Generate Synonyms / Expand Query
+    const expansionPrompt = `Kullanıcı veritabanında arama yapmak için şu soruyu sordu: "${message}".\nLütfen bu soruyu semantik (anlamsal) bir vektör arama motorunda daha iyi bulabilmemiz için, sorudaki kelimelerin eşanlamlılarını ve ilgili 4-5 Türkçe anahtar kelimeyi üret (Örneğin ilaç deniyorsa hap, şurup, tedavi gibi eklentiler yap). Asla cümle kurma, açıklama yazma, sadece kelime listesini virgülle ayırarak ver.`;
+    
+    let expandedKeywords = "";
+    try {
+        expandedKeywords = await generateOllamaCompletion(expansionPrompt, model || 'gemma4');
+    } catch (e) {
+        console.error("Query expansion failed, using original message only.");
+    }
+    
+    const superQuery = `${message} ${expandedKeywords}`;
+
+    // 2. Search for relevant Context in LanceDB using the expanded SUPER QUERY
+    const queryVector = await createEmbedding(superQuery);
     const table = await openWhatsAppTable();
     if (!table) return NextResponse.json({ error: 'Index is empty.' }, { status: 404 });
     const searchResults = await table.search(queryVector)
-      .limit(15)
+      .limit(25)
       .toArray();
 
     const cleanedResults = searchResults.filter(r => r.sessionId !== 'init');

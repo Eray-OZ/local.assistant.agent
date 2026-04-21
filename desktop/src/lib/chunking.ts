@@ -8,7 +8,12 @@ export interface MessageChunk {
   messageCount: number;
 }
 
-export function chunkWhatsAppMessages(messages: ParsedMessage[], maxGapMinutes = 60): MessageChunk[] {
+export function chunkWhatsAppMessages(
+  messages: ParsedMessage[], 
+  maxGapMinutes = 60, 
+  windowSize = 20, 
+  overlapSize = 5
+): MessageChunk[] {
   if (messages.length === 0) return [];
 
   const chunks: MessageChunk[] = [];
@@ -22,6 +27,17 @@ export function chunkWhatsAppMessages(messages: ParsedMessage[], maxGapMinutes =
     return new Date(); // fallback
   };
 
+  const finalizeChunk = () => {
+    if (!currentChunkParams || currentChunkParams.messages.length === 0) return;
+    chunks.push({
+      sessionId: `session_${currentChunkParams.startTime.getTime()}`,
+      startTime: currentChunkParams.startTime.toISOString(),
+      endTime: currentChunkParams.endTime.toISOString(),
+      text: currentChunkParams.messages.map(m => `[${m.date}] ${m.sender}: ${m.content}`).join('\n'),
+      messageCount: currentChunkParams.messages.length
+    });
+  };
+
   for (const msg of messages) {
     const msgDate = parseDate(msg.date);
     
@@ -32,29 +48,32 @@ export function chunkWhatsAppMessages(messages: ParsedMessage[], maxGapMinutes =
     
     const diffMinutes = (msgDate.getTime() - currentChunkParams.endTime.getTime()) / (1000 * 60);
     
-    if (diffMinutes <= maxGapMinutes) {
+    // Eğer zaman boşluktan küçükse VEYA pencere (window) limitine gelmediyse eklemeye devam et.
+    if (diffMinutes <= maxGapMinutes && currentChunkParams.messages.length < windowSize) {
       currentChunkParams.messages.push(msg);
       currentChunkParams.endTime = msgDate;
     } else {
-      chunks.push({
-        sessionId: `session_${currentChunkParams.startTime.getTime()}`,
-        startTime: currentChunkParams.startTime.toISOString(),
-        endTime: currentChunkParams.endTime.toISOString(),
-        text: currentChunkParams.messages.map(m => `[${m.date}] ${m.sender}: ${m.content}`).join('\n'),
-        messageCount: currentChunkParams.messages.length
-      });
-      currentChunkParams = { startTime: msgDate, endTime: msgDate, messages: [msg] };
+      // Sınırı aştık (Ya çok fazla zaman geçti ya da mesaj bloğu çok büyüdü), bloğu kaydet.
+      finalizeChunk();
+      
+      // Eğer zaman limitinden kopmadıysak ve sadece mesaja (windowSize) takıldıysak OVERLAP (Örtüşme) yap.
+      if (diffMinutes <= maxGapMinutes) {
+        const overlapMsgs = currentChunkParams.messages.slice(-overlapSize);
+        // Örtüşen kısımla yeni bloğu başlat
+        currentChunkParams = { 
+          startTime: parseDate(overlapMsgs[0].date), 
+          endTime: msgDate, 
+          messages: [...overlapMsgs, msg] 
+        };
+      } else {
+        // Zaman çok geçmiş, sıfırdan yeni blok başlat
+        currentChunkParams = { startTime: msgDate, endTime: msgDate, messages: [msg] };
+      }
     }
   }
 
-  if (currentChunkParams) {
-     chunks.push({
-      sessionId: `session_${currentChunkParams.startTime.getTime()}`,
-      startTime: currentChunkParams.startTime.toISOString(),
-      endTime: currentChunkParams.endTime.toISOString(),
-      text: currentChunkParams.messages.map(m => `[${m.date}] ${m.sender}: ${m.content}`).join('\n'),
-      messageCount: currentChunkParams.messages.length
-    });
+  if (currentChunkParams && currentChunkParams.messages.length > 0) {
+     finalizeChunk();
   }
 
   return chunks;
