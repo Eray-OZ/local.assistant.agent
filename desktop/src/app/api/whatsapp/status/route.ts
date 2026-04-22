@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { openWhatsAppTable } from '@/lib/vectorDb';
-import db from '@/lib/db';
+import db, { getAvailableDocuments } from '@/lib/db';
 
 export async function GET() {
   try {
@@ -18,9 +18,12 @@ export async function GET() {
 
     const rows = lanceRows || (job?.total_chunks ?? 0);
     const loaded = rows > 0;
+    
+    // Get available documents
+    const documents = getAvailableDocuments();
 
-    return NextResponse.json({ loaded, rows });
+    return NextResponse.json({ loaded, rows, documents });
   } catch (error) {
-    return NextResponse.json({ loaded: false, rows: 0, error: 'Failed to verify database status.' });
+    return NextResponse.json({ loaded: false, rows: 0, documents: [], error: 'Failed to verify database status.' });
   }
 }

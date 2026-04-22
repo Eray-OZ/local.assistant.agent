@@ -11,7 +11,14 @@ interface ChatSession {
 
 interface ChatMessage {
   role: 'user' | 'agent';
-  content: string; // db uses content, UI used text. We migrate to content.
+  content: string;
+}
+
+interface Document {
+  id: number;
+  filename: string | null;
+  file_hash: string;
+  total_chunks: number;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -41,6 +48,11 @@ export default function WhatsAppPage() {
   const [query, setQuery] = useState<string>('');
   const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
   const [chatting, setChatting] = useState<boolean>(false);
+  
+  // Document States
+  const [availableDocs, setAvailableDocs] = useState<Document[]>([]);
+  const [selectedDocs, setSelectedDocs] = useState<number[]>([]);
+  const [showDocs, setShowDocs] = useState<boolean>(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -72,21 +84,63 @@ export default function WhatsAppPage() {
           setDbRows(data.rows);
           setStatus(`System Ready: Database detected with ${data.rows} chunks.`);
         }
+        if (data.documents) {
+          setAvailableDocs(data.documents);
+        }
       }).catch(err => console.error(err));
 
     loadInitialSessions();
   }, []);
 
-  // 2. Load specific session messages
+  // 2. Load specific session messages and documents
   const loadSession = async (id: string) => {
     setActiveSessionId(id);
     try {
-      const res = await fetch(`/api/chats/${id}/messages`);
-      const data = await res.json();
-      if (data.messages) {
-        setChatLog(data.messages);
+      const [messagesRes, docsRes] = await Promise.all([
+        fetch(`/api/chats/${id}/messages`),
+        fetch(`/api/chats/${id}/documents`)
+      ]);
+      
+      const messagesData = await messagesRes.json();
+      const docsData = await docsRes.json();
+      
+      if (messagesData.messages) {
+        setChatLog(messagesData.messages);
       }
-    } catch(e) { console.error('Failed to load messages', e); }
+      if (docsData.available) {
+        setAvailableDocs(docsData.available);
+      }
+      if (docsData.selected) {
+        setSelectedDocs(docsData.selected.map((d: Document) => d.id));
+      }
+    } catch(e) { console.error('Failed to load session', e); }
+  };
+
+  // Toggle document selection
+  const toggleDocument = async (jobId: number) => {
+    if (!activeSessionId) {
+      alert('Once bir sohbet secin veya yeni olusturun');
+      return;
+    }
+    
+    const isSelected = selectedDocs.includes(jobId);
+    const action = isSelected ? 'remove' : 'add';
+    
+    try {
+      const res = await fetch(`/api/chats/${activeSessionId}/documents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, action })
+      });
+      
+      if (res.ok) {
+        if (isSelected) {
+          setSelectedDocs(prev => prev.filter(id => id !== jobId));
+        } else {
+          setSelectedDocs(prev => [...prev, jobId]);
+        }
+      }
+    } catch(e) { console.error('Failed to toggle document', e); }
   };
 
   const handleNewChat = () => {
@@ -146,6 +200,9 @@ export default function WhatsAppPage() {
           const statusData = await statusRes.json();
           if (statusData.loaded) {
             setDbRows(statusData.rows);
+          }
+          if (statusData.documents) {
+            setAvailableDocs(statusData.documents);
           }
         } catch {}
       } else {
@@ -209,7 +266,7 @@ export default function WhatsAppPage() {
       const response = await fetch('/api/whatsapp/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage, model: 'gemma4' })
+        body: JSON.stringify({ message: userMessage, model: 'gemma4', sessionId: currentSessionId })
       });
 
       if (!response.ok) {
@@ -300,6 +357,88 @@ export default function WhatsAppPage() {
         
         {/* Sidebar */}
         <div style={{ width: '260px', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {/* Documents Toggle */}
+          <div className="card" style={{ padding: '1rem' }}>
+            <div 
+              onClick={() => setShowDocs(!showDocs)}
+              style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'space-between',
+                cursor: 'pointer'
+              }}
+            >
+              <div>
+                <div style={{ fontSize: '0.875rem', fontWeight: 500, color: 'var(--text)' }}>
+                  Documents
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {selectedDocs.length} of {availableDocs.length} selected
+                </div>
+              </div>
+              <svg 
+                width="16" 
+                height="16" 
+                viewBox="0 0 24 24" 
+                fill="none" 
+                stroke="currentColor" 
+                strokeWidth="2"
+                style={{ 
+                  transform: showDocs ? 'rotate(180deg)' : 'none',
+                  transition: 'transform 0.2s ease',
+                  color: 'var(--text-secondary)'
+                }}
+              >
+                <path d="M6 9l6 6 6-6"/>
+              </svg>
+            </div>
+            
+            {showDocs && (
+              <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {availableDocs.length === 0 ? (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    No documents imported yet.
+                  </span>
+                ) : (
+                  availableDocs.map(doc => (
+                    <label 
+                      key={doc.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        padding: '0.5rem',
+                        borderRadius: 'var(--radius-sm)',
+                        cursor: 'pointer',
+                        background: selectedDocs.includes(doc.id) ? 'var(--bg-hover)' : 'transparent',
+                        transition: 'background 0.15s ease'
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedDocs.includes(doc.id)}
+                        onChange={() => toggleDocument(doc.id)}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      <span style={{ 
+                        fontSize: '0.75rem', 
+                        color: selectedDocs.includes(doc.id) ? 'var(--text)' : 'var(--text-secondary)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {doc.filename || `Export ${doc.id}`}
+                      </span>
+                      <span style={{ fontSize: '0.625rem', color: 'var(--text-muted)', marginLeft: 'auto', flexShrink: 0 }}>
+                        {doc.total_chunks} chunks
+                      </span>
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Status Card */}
           <div className="card" style={{ padding: '1rem' }}>
             {dbLoaded ? (

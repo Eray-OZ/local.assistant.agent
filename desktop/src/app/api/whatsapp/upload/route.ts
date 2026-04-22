@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import db, { rebuildWhatsAppSearchIndex } from '@/lib/db';
+import db, { rebuildWhatsAppSearchIndex, updateJobFilename } from '@/lib/db';
 import { parseWhatsAppChat } from '@/lib/whatsappParser';
 import { chunkWhatsAppMessages } from '@/lib/chunking';
 import { createEmbedding } from '@/lib/embedding';
@@ -67,9 +67,9 @@ export async function POST(request: Request) {
       dropExistingTable = false;
       console.log(`\n🔄 Checkpoint found! Resuming from chunk ${startChunkIndex}/${chunks.length} (${Math.round(startChunkIndex/chunks.length*100)}% already done)...\n`);
     } else {
-      // Fresh start — insert or replace job record
-      db.prepare('INSERT OR REPLACE INTO embedding_jobs (file_hash, total_chunks, completed_chunks, status) VALUES (?, ?, 0, \'in_progress\')').run(fileHash, chunks.length);
-      console.log(`\n📦 Fresh start: ${chunks.length} chunks to embed...\n`);
+      // Fresh start — insert or replace job record (with filename)
+      db.prepare('INSERT OR REPLACE INTO embedding_jobs (file_hash, filename, total_chunks, completed_chunks, status) VALUES (?, ?, ?, 0, \'in_progress\')').run(fileHash, file.name, chunks.length);
+      console.log(`\n📦 Fresh start: ${chunks.length} chunks to embed for "${file.name}"...\n`);
     }
 
     // 1. Insert raw messages into SQLite
@@ -110,7 +110,8 @@ export async function POST(request: Request) {
           sessionId: chunk.sessionId,
           startTime: chunk.startTime,
           endTime: chunk.endTime,
-          messageCount: chunk.messageCount
+          messageCount: chunk.messageCount,
+          fileHash: fileHash
         });
 
         const done = i + j + 1;

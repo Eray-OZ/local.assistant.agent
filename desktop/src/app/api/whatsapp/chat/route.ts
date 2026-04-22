@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { createEmbedding } from '@/lib/embedding';
-import { extractDateRange } from '@/lib/dateExtractor';
 import { generateOllamaCompletion, generateOllamaStream } from '@/lib/llm';
-import { answerFavoriteColor, detectPreferenceIntent } from '@/lib/whatsappProfile';
 import { openWhatsAppTable } from '@/lib/vectorDb';
+import { getChatDocuments } from '@/lib/db';
+import { parseQueryIntent } from '@/lib/queryParser';
+import type { QueryIntent } from '@/lib/queryParser';
 import {
   findMatchingMessages,
   formatMatchedMessage,
@@ -13,6 +14,7 @@ import {
 interface VectorSearchRow {
   sessionId: string;
   text: string;
+  fileHash: string;
 }
 
 function streamTextResponse(text: string) {
@@ -30,53 +32,66 @@ function streamTextResponse(text: string) {
   });
 }
 
-async function getVectorContext(superQuery: string, dateRange: ReturnType<typeof extractDateRange>) {
+async function getVectorContext(
+  superQuery: string, 
+  dateRange: QueryIntent['dateRange'],
+  fileHashes: string[]
+) {
   const queryVector = await createEmbedding(superQuery);
   const table = await openWhatsAppTable();
   if (!table) {
     return null;
   }
 
-  let query = table.search(queryVector).limit(25);
+  let query = table.search(queryVector).limit(50);
+  
+  // Build where clause with date range and file hash filter
+  const conditions: string[] = [];
+  
   if (dateRange) {
-    const whereClause = `startTime >= '${dateRange.start}' AND startTime < '${dateRange.end}'`;
-    query = query.where(whereClause);
+    conditions.push(`startTime >= '${dateRange.start}' AND startTime < '${dateRange.end}'`);
+  }
+  
+  if (fileHashes.length > 0) {
+    const hashList = fileHashes.map(h => `'${h}'`).join(',');
+    conditions.push(`fileHash IN (${hashList})`);
+  }
+  
+  if (conditions.length > 0) {
+    query = query.where(conditions.join(' AND '));
   }
 
   const results = await query.toArray() as VectorSearchRow[];
-  return results.filter((row) => row.sessionId !== 'init');
+  return results
+    .filter((row) => row.sessionId !== 'init')
+    .filter((row) => fileHashes.length === 0 || fileHashes.includes(row.fileHash))
+    .slice(0, 25);
 }
 
 export async function POST(request: Request) {
   try {
-    const { message, model } = await request.json();
+    const { message, model, sessionId } = await request.json();
     if (!message) {
       return NextResponse.json({ error: 'No message provided' }, { status: 400 });
     }
 
-    const resolvedModel = model || 'gemma4';
-    const dateRange = extractDateRange(message);
-    const directMessageRequest = isDirectMessageRequest(message);
-    const preferenceIntent = detectPreferenceIntent(message);
-
-    if (preferenceIntent?.attribute === 'favorite_color') {
-      const answer = answerFavoriteColor(preferenceIntent.targetAlias);
-      if (!answer) {
-        return streamTextResponse('Bu soruya guvenilir cevap verecek kadar acik bir mesaj bulamadim.');
-      }
-
-      const evidenceText = answer.evidence
-        .map((item) => `[${item.messageDate}] ${item.sender}: ${item.content}`)
-        .join('\n');
-
-      return streamTextResponse(`Buldugum en net kanita gore en sevdigi renk ${answer.answer}.\n${evidenceText}`);
+    // Get selected documents for this chat session
+    let selectedFileHashes: string[] = [];
+    if (sessionId) {
+      const docs = getChatDocuments(sessionId);
+      selectedFileHashes = docs.map(d => d.file_hash);
     }
 
-    const rawMatches = findMatchingMessages(
-      message,
-      dateRange,
-      directMessageRequest ? 5 : 20,
-      directMessageRequest ? { requirePrimaryTermHit: true, preferFocusedPhrase: true } : {}
+    const resolvedModel = model || 'gemma4';
+    
+    // Parse query intent using LLM
+    const intent = await parseQueryIntent(message, resolvedModel);
+    const directMessageRequest = isDirectMessageRequest(intent);
+
+    // Search with parsed intent
+    const rawMatches = await findMatchingMessages(
+      intent,
+      directMessageRequest ? 5 : 20
     );
 
     if (directMessageRequest) {
@@ -89,18 +104,11 @@ export async function POST(request: Request) {
 
     let contextText = rawMatches.map(formatMatchedMessage).join('\n');
 
+    // Fallback to vector search if no FTS results
     if (!contextText) {
-      const expansionPrompt = `Kullanici WhatsApp veritabaninda arama yapmak icin su soruyu sordu: "${message}". Bu soruyu semantik aramada daha iyi bulabilmek icin 4-5 Turkce anahtar kelimeyi virgulle yaz. Sadece kelime listesi ver.`;
-      let expandedKeywords = '';
-
-      try {
-        expandedKeywords = await generateOllamaCompletion(expansionPrompt, resolvedModel);
-      } catch {
-        expandedKeywords = '';
-      }
-
-      const superQuery = `${message} ${expandedKeywords}`.trim();
-      const vectorResults = await getVectorContext(superQuery, dateRange);
+      // Build super query from intent search terms
+      const superQuery = [message, ...intent.searchTerms].join(' ').trim();
+      const vectorResults = await getVectorContext(superQuery, intent.dateRange, selectedFileHashes);
 
       if (!vectorResults) {
         return NextResponse.json({ error: 'Index is empty.' }, { status: 404 });
@@ -112,6 +120,9 @@ export async function POST(request: Request) {
     }
 
     if (!contextText.trim()) {
+      if (selectedFileHashes.length === 0) {
+        return streamTextResponse('Once sohbet icin belge secin. Sag panelden "Documents" bolumunden yuklenen dosyalari secin.');
+      }
       return streamTextResponse('Maalesef bu tarihte/konuda mesaj bulunamadi. Lutfen farkli bir tarih veya anahtar kelime deneyin.');
     }
 
