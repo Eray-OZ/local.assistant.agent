@@ -1,12 +1,17 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import db from '@/lib/db';
+import db, { rebuildWhatsAppSearchIndex } from '@/lib/db';
 import { parseWhatsAppChat } from '@/lib/whatsappParser';
 import { chunkWhatsAppMessages } from '@/lib/chunking';
 import { createEmbedding } from '@/lib/embedding';
 import { getVectorDb } from '@/lib/vectorDb';
 
 const BATCH_SIZE = 500;
+
+interface EmbeddingJobRow {
+  status: string;
+  completed_chunks: number;
+}
 
 // Retry wrapper: if Ollama crashes temporarily, retry up to 3 times
 async function createEmbeddingWithRetry(text: string, retries = 3): Promise<number[]> {
@@ -16,7 +21,7 @@ async function createEmbeddingWithRetry(text: string, retries = 3): Promise<numb
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       return await createEmbedding(safeText);
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (attempt === retries) throw err;
       const waitMs = attempt * 2000;
       console.warn(`\n  ⚠️  Embedding error (attempt ${attempt}/${retries}), waiting ${waitMs/1000}s...`);
@@ -49,7 +54,9 @@ export async function POST(request: Request) {
     const chunks = chunkWhatsAppMessages(messages, 60, 10, 2, 600);
 
     // --- CHECKPOINT LOGIC ---
-    const existingJob = db.prepare('SELECT * FROM embedding_jobs WHERE file_hash = ?').get(fileHash) as any;
+    const existingJob = db
+      .prepare('SELECT status, completed_chunks FROM embedding_jobs WHERE file_hash = ?')
+      .get(fileHash) as EmbeddingJobRow | undefined;
 
     let startChunkIndex = 0;
     let dropExistingTable = true;
@@ -70,8 +77,9 @@ export async function POST(request: Request) {
       // Only insert raw messages on a fresh start (not resume)
       db.prepare('DELETE FROM whatsapp_messages').run();
       const insert = db.prepare('INSERT INTO whatsapp_messages (message_date, sender, content) VALUES (@date, @sender, @content)');
-      const insertMany = db.transaction((msgs: any[]) => { for (const msg of msgs) insert.run(msg); });
+      const insertMany = db.transaction((msgs: typeof messages) => { for (const msg of msgs) insert.run(msg); });
       insertMany(messages);
+      rebuildWhatsAppSearchIndex();
     }
 
     // 2. Setup vector DB
@@ -140,8 +148,14 @@ export async function POST(request: Request) {
       message: `Processed ${messages.length} messages into ${totalEmbedded} searchable chunks.`
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('\nError processing WhatsApp upload:', error);
-    return NextResponse.json({ error: 'Internal Server Error', details: error.message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: 'Internal Server Error',
+        details: error instanceof Error ? error.message : 'Unknown upload error',
+      },
+      { status: 500 }
+    );
   }
 }

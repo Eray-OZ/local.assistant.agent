@@ -1,4 +1,4 @@
-import db from './db';
+import db, { ensureWhatsAppSearchIndex } from './db';
 import type { DateRange } from './dateExtractor';
 import { normalizeSearchText, parseWhatsAppDate } from './whatsappDate';
 
@@ -7,6 +7,10 @@ interface StoredMessage {
   message_date: string;
   sender: string;
   content: string;
+}
+
+interface FtsCandidate extends StoredMessage {
+  lexical_rank: number;
 }
 
 export interface MatchedMessage {
@@ -23,13 +27,24 @@ interface MatchOptions {
   preferFocusedPhrase?: boolean;
 }
 
+interface RetrievalPreferences {
+  minContentTokenCount: number;
+  preferLongerContent: boolean;
+}
+
+interface SenderConstraint {
+  aliases: string[];
+  required: boolean;
+}
+
 const STOP_WORDS = new Set([
-  'acaba', 'ait', 'alakali', 'arama', 'aran', 'ara', 'bir', 'bu', 'bul', 'bana',
-  'de', 'da', 'diye', 'gibi', 'goster', 'gosteren', 'gore', 'hakkinda', 'hangi',
-  'gecen', 'herhangi', 'icinde', 'icerisinde', 'ile', 'icin', 'icinmi', 'ilgili', 'konu', 'konuda', 'mesaj', 'mesaji',
-  'mesajı', 'mesajlar', 'mesajlari', 'mesajlari', 'mi', 'mu', 'mı', 'muğlak', 'ne',
-  'olan', 'olur', 'saat', 'saatinde', 'sor', 'tarih', 'tarihli', 'tarihinden',
-  've', 'veya', 'var', 'yaz', 'yazar', 'yazar misin', 'yazdir', 'yolla',
+  'acaba', 'ait', 'alakali', 'arama', 'aran', 'ara', 'bahseden', 'bahsettigim',
+  'bir', 'bu', 'bul', 'bana', 'de', 'da', 'dedigim', 'diye', 'gibi', 'goster',
+  'gosteren', 'gore', 'hakkinda', 'hangi', 'gecen', 'herhangi', 'icinde',
+  'icerisinde', 'ile', 'icin', 'icinmi', 'ilgili', 'konu', 'konuda', 'mesaj',
+  'mesaji', 'mesajı', 'mesajlar', 'mesajlari', 'mi', 'mu', 'mı', 'ne', 'olan',
+  'olur', 'renk', 'saat', 'saatinde', 'sadece', 'sor', 'tarih', 'tarihli',
+  'tarihinden', 've', 'veya', 'var', 'yaz', 'yazar', 'yazdir', 'yolla',
 ]);
 
 const MONTH_TERMS = new Set([
@@ -65,6 +80,13 @@ function cleanMessageContent(content: string): string {
   );
 }
 
+function tokenize(text: string): string[] {
+  return normalizeSearchText(text)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
 function extractTermsFromNormalizedText(normalized: string): string[] {
   return Array.from(new Set(
     normalized
@@ -86,6 +108,9 @@ function extractFocusedQuery(normalized: string): string | null {
     /\b(.+?)\s+ile\s+ilgili\b/,
     /\b(.+?)\s+hakkinda\b/,
     /\b(.+?)\s+konusunda\b/,
+    /\b(.+?)\s+anlattigim\b/,
+    /\b(.+?)\s+bahsettigim\b/,
+    /\b(.+?)\s+dedigim\b/,
   ];
 
   for (const pattern of patterns) {
@@ -100,17 +125,16 @@ function extractFocusedQuery(normalized: string): string | null {
   return null;
 }
 
-function stripTurkishSuffixes(term: string): string[] {
+function buildSearchVariants(term: string): string[] {
   const variants = new Set<string>([term]);
   const suffixes = [
-    'lerden', 'lardan', 'lerdir', 'lardir', 'lerde', 'larda', 'lere', 'lara',
-    'lerin', 'larin', 'lerden', 'lardan', 'lerle', 'larla', 'lerin', 'larin',
-    'lerin', 'larin', 'leri', 'lari', 'lerin', 'larin', 'lerin', 'larin',
-    'den', 'dan', 'ten', 'tan', 'nin', 'nin', 'nın', 'nin', 'nun', 'nun',
-    'dir', 'dır', 'dur', 'dür', 'tir', 'tır', 'tur', 'tür', 'lik', 'lık',
-    'luk', 'lük', 'li', 'lı', 'lu', 'lü', 'si', 'sı', 'su', 'sü',
-    'yi', 'yı', 'yu', 'yü', 'i', 'ı', 'u', 'ü', 'e', 'a', 'n',
-    'ler', 'lar', 'le', 'la',
+    'lerden', 'lardan', 'lerde', 'larda', 'lere', 'lara',
+    'lerin', 'larin', 'lerle', 'larla', 'leri', 'lari',
+    'den', 'dan', 'ten', 'tan', 'nin', 'nın', 'nun', 'dir',
+    'dır', 'dur', 'dür', 'tir', 'tır', 'tur', 'tür', 'lik',
+    'lık', 'luk', 'lük', 'li', 'lı', 'lu', 'lü', 'si', 'sı',
+    'su', 'sü', 'yi', 'yı', 'yu', 'yü', 'i', 'ı', 'u', 'ü',
+    'e', 'a', 'n', 'ler', 'lar', 'le', 'la',
   ];
 
   let changed = true;
@@ -129,60 +153,22 @@ function stripTurkishSuffixes(term: string): string[] {
     }
   }
 
+  for (const value of Array.from(variants)) {
+    if (value.endsWith('iy') && value.length >= 5) {
+      variants.add(`${value}e`);
+    }
+  }
+
   return Array.from(variants).filter((value) => value.length >= 4);
 }
 
-function buildSearchVariants(term: string): string[] {
-  const variants = new Set<string>();
-  for (const variant of stripTurkishSuffixes(term)) {
-    variants.add(variant);
-    if (variant.endsWith('iy') && variant.length >= 5) {
-      variants.add(`${variant}e`);
+function countTermMatches(tokens: string[], variants: string[]): number {
+  return tokens.reduce((count, token) => {
+    if (variants.some((variant) => token === variant || token.startsWith(variant))) {
+      return count + 1;
     }
-  }
-  return Array.from(variants);
-}
-
-function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) return 0;
-  let count = 0;
-  let index = 0;
-  while (true) {
-    index = haystack.indexOf(needle, index);
-    if (index === -1) return count;
-    count += 1;
-    index += needle.length;
-  }
-}
-
-function tokenize(text: string): string[] {
-  return normalizeSearchText(text)
-    .split(/\s+/)
-    .map((token) => token.trim())
-    .filter(Boolean);
-}
-
-function tokenMatchesVariant(token: string, variant: string): boolean {
-  if (token === variant) return true;
-  if (token.startsWith(`${variant}'`)) return true;
-  if (token.startsWith(variant) && token.length - variant.length <= 6) return true;
-  return false;
-}
-
-function countTokenMatches(tokens: string[], variants: string[]): number {
-  let hits = 0;
-  for (const token of tokens) {
-    if (variants.some((variant) => tokenMatchesVariant(token, variant))) {
-      hits += 1;
-    }
-  }
-  return hits;
-}
-
-export function extractQueryTerms(query: string): string[] {
-  const normalized = normalizeSearchText(query);
-  const focusedQuery = extractFocusedQuery(normalized);
-  return extractTermsFromNormalizedText(focusedQuery ?? normalized);
+    return count;
+  }, 0);
 }
 
 function isWithinRange(date: Date | null, range: DateRange | null): boolean {
@@ -190,6 +176,94 @@ function isWithinRange(date: Date | null, range: DateRange | null): boolean {
   if (!date) return false;
   const ts = date.getTime();
   return ts >= Date.parse(range.start) && ts < Date.parse(range.end);
+}
+
+function inferRetrievalPreferences(normalizedQuery: string): RetrievalPreferences {
+  const prefersLongerContent =
+    normalizedQuery.includes('olmasin') ||
+    normalizedQuery.includes('tek kelime') ||
+    normalizedQuery.includes('anlattigim') ||
+    normalizedQuery.includes('bahsettigim');
+
+  return {
+    minContentTokenCount: prefersLongerContent ? 2 : 1,
+    preferLongerContent: prefersLongerContent,
+  };
+}
+
+function detectSenderConstraint(normalizedQuery: string): SenderConstraint | null {
+  if (
+    normalizedQuery.includes('sevgilim tarafindan') ||
+    normalizedQuery.includes('sevgilim tarafindan atilmis') ||
+    normalizedQuery.includes('sevgilim yazmis')
+  ) {
+    return { aliases: ['sevgilim'], required: true };
+  }
+
+  if (
+    normalizedQuery.includes('benim tarafimdan') ||
+    normalizedQuery.includes('benim yazdigim') ||
+    normalizedQuery.includes('benim attigim') ||
+    normalizedQuery.includes('eray tarafindan')
+  ) {
+    return { aliases: ['eray'], required: true };
+  }
+
+  return null;
+}
+
+function escapeFtsToken(token: string): string {
+  return token.replace(/"/g, '""');
+}
+
+function buildFtsQuery(anchorTerms: string[], termVariants: Map<string, string[]>): string | null {
+  if (anchorTerms.length === 0) return null;
+
+  const clauses = anchorTerms.map((term) => {
+    const variants = (termVariants.get(term) ?? [term]).map((variant) => `${escapeFtsToken(variant)}*`);
+    if (variants.length === 1) return variants[0];
+    return `(${variants.join(' OR ')})`;
+  });
+
+  return clauses.join(' AND ');
+}
+
+function fetchFtsCandidates(matchQuery: string, limit: number): FtsCandidate[] {
+  ensureWhatsAppSearchIndex();
+
+  const stmt = db.prepare(`
+    SELECT
+      m.id,
+      m.message_date,
+      m.sender,
+      m.content,
+      f.lexical_rank
+    FROM (
+      SELECT
+        message_id,
+        bm25(whatsapp_messages_fts, 1.0, 1.0) AS lexical_rank
+      FROM whatsapp_messages_fts
+      WHERE whatsapp_messages_fts MATCH ?
+      ORDER BY lexical_rank
+      LIMIT ?
+    ) AS f
+    JOIN whatsapp_messages AS m ON m.id = f.message_id
+    ORDER BY f.lexical_rank, m.id DESC
+  `);
+
+  return stmt.all(matchQuery, limit) as FtsCandidate[];
+}
+
+function fetchFallbackCandidates(): StoredMessage[] {
+  return db
+    .prepare('SELECT id, message_date, sender, content FROM whatsapp_messages ORDER BY id ASC')
+    .all() as StoredMessage[];
+}
+
+export function extractQueryTerms(query: string): string[] {
+  const normalized = normalizeSearchText(query);
+  const focusedQuery = extractFocusedQuery(normalized);
+  return extractTermsFromNormalizedText(focusedQuery ?? normalized);
 }
 
 export function formatMatchedMessage(message: Pick<MatchedMessage, 'messageDate' | 'sender' | 'content'>): string {
@@ -209,36 +283,42 @@ export function findMatchingMessages(
   const primaryTerms = terms.length === 0
     ? []
     : terms.filter((term) => term.length === Math.max(...terms.map((value) => value.length)));
-  const focusedVariants = focusedQuery
-    ? extractTermsFromNormalizedText(focusedQuery).flatMap((term) => termVariants.get(term) ?? [term])
-    : [];
-  const rows = db
-    .prepare('SELECT id, message_date, sender, content FROM whatsapp_messages ORDER BY id ASC')
-    .all() as StoredMessage[];
+  const anchorTerms = focusedQuery ? extractTermsFromNormalizedText(focusedQuery) : primaryTerms;
+  const preferences = inferRetrievalPreferences(normalizedQuery);
+  const senderConstraint = detectSenderConstraint(normalizedQuery);
 
-  const matched = rows
+  const ftsQuery = buildFtsQuery(anchorTerms.length > 0 ? anchorTerms : terms, termVariants);
+  const candidateRows = ftsQuery
+    ? fetchFtsCandidates(ftsQuery, Math.max(limit * 12, 100))
+    : fetchFallbackCandidates();
+
+  const ranked = candidateRows
     .map((row) => {
       const cleanedContent = cleanMessageContent(row.content);
-      const normalizedContent = normalizeSearchText(`${row.sender} ${cleanedContent}`);
-      const normalizedTokens = tokenize(`${row.sender} ${cleanedContent}`);
+      const contentTokens = tokenize(cleanedContent);
+      const allTokens = tokenize(`${row.sender} ${cleanedContent}`);
+      const normalizedSender = normalizeSearchText(row.sender);
       const parsedDate = parseWhatsAppDate(row.message_date);
       const perTermHits = new Map<string, number>();
+
       const termHits = terms.reduce((score, term) => {
         const variants = termVariants.get(term) ?? [term];
-        const tokenHits = countTokenMatches(normalizedTokens, variants);
-        const substringHits = variants.reduce(
-          (maxHit, variant) => Math.max(maxHit, countOccurrences(normalizedContent, variant)),
-          0
-        );
-        const bestHit = tokenHits > 0 ? tokenHits : substringHits;
-        perTermHits.set(term, bestHit);
-        return score + bestHit;
+        const hits = countTermMatches(allTokens, variants);
+        perTermHits.set(term, hits);
+        return score + hits;
       }, 0);
+
       const primaryTermHit = primaryTerms.some((term) => (perTermHits.get(term) ?? 0) > 0);
-      const focusedPhraseHit = focusedVariants.length > 0 && focusedVariants.some((variant) =>
-        countTokenMatches(normalizedTokens, [variant]) > 0
-      );
+      const focusedPhraseHit = anchorTerms.some((term) => (perTermHits.get(term) ?? 0) > 0);
+      const lexicalRank =
+        'lexical_rank' in row && typeof row.lexical_rank === 'number'
+          ? row.lexical_rank
+          : Number.POSITIVE_INFINITY;
       const dateBoost = dateRange && isWithinRange(parsedDate, dateRange) ? 1000 : 0;
+      const senderHit = senderConstraint
+        ? senderConstraint.aliases.some((alias) => normalizedSender.includes(alias))
+        : true;
+
       return {
         id: row.id,
         messageDate: row.message_date,
@@ -249,18 +329,35 @@ export function findMatchingMessages(
         termHits,
         primaryTermHit,
         focusedPhraseHit,
+        senderHit,
+        lexicalRank,
+        contentTokenCount: contentTokens.length,
       };
     })
     .filter((row) => !isIgnoredMessage(row.content))
     .filter((row) => isWithinRange(row.parsedDate, dateRange))
+    .filter((row) => (senderConstraint?.required ? row.senderHit : true))
     .filter((row) => (terms.length === 0 ? true : row.termHits > 0))
-    .filter((row) => (options.requirePrimaryTermHit ? row.primaryTermHit : true))
+    .filter((row) => (options.requirePrimaryTermHit && primaryTerms.length > 0 ? row.primaryTermHit : true));
+
+  const constraintSatisfied = ranked.some((row) => row.contentTokenCount >= preferences.minContentTokenCount);
+  const constrained = constraintSatisfied
+    ? ranked.filter((row) => row.contentTokenCount >= preferences.minContentTokenCount)
+    : ranked;
+
+  return constrained
     .sort((a, b) => {
       if (options.preferFocusedPhrase && a.focusedPhraseHit !== b.focusedPhraseHit) {
         return Number(b.focusedPhraseHit) - Number(a.focusedPhraseHit);
       }
       if (b.score !== a.score) return b.score - a.score;
-      if (a.content.length !== b.content.length) return a.content.length - b.content.length;
+      if (a.lexicalRank !== b.lexicalRank) return a.lexicalRank - b.lexicalRank;
+      if (preferences.preferLongerContent && a.contentTokenCount !== b.contentTokenCount) {
+        return b.contentTokenCount - a.contentTokenCount;
+      }
+      if (!preferences.preferLongerContent && a.content.length !== b.content.length) {
+        return a.content.length - b.content.length;
+      }
       if (a.parsedDate && b.parsedDate) return a.parsedDate.getTime() - b.parsedDate.getTime();
       return a.id - b.id;
     })
@@ -273,8 +370,6 @@ export function findMatchingMessages(
       parsedDate: row.parsedDate,
       score: row.score,
     }));
-
-  return matched;
 }
 
 export function isDirectMessageRequest(query: string): boolean {

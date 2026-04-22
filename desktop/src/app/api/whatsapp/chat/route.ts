@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createEmbedding } from '@/lib/embedding';
 import { extractDateRange } from '@/lib/dateExtractor';
 import { generateOllamaCompletion, generateOllamaStream } from '@/lib/llm';
+import { answerFavoriteColor, detectPreferenceIntent } from '@/lib/whatsappProfile';
 import { openWhatsAppTable } from '@/lib/vectorDb';
 import {
   findMatchingMessages,
@@ -56,6 +57,21 @@ export async function POST(request: Request) {
     const resolvedModel = model || 'gemma4';
     const dateRange = extractDateRange(message);
     const directMessageRequest = isDirectMessageRequest(message);
+    const preferenceIntent = detectPreferenceIntent(message);
+
+    if (preferenceIntent?.attribute === 'favorite_color') {
+      const answer = answerFavoriteColor(preferenceIntent.targetAlias);
+      if (!answer) {
+        return streamTextResponse('Bu soruya guvenilir cevap verecek kadar acik bir mesaj bulamadim.');
+      }
+
+      const evidenceText = answer.evidence
+        .map((item) => `[${item.messageDate}] ${item.sender}: ${item.content}`)
+        .join('\n');
+
+      return streamTextResponse(`Buldugum en net kanita gore en sevdigi renk ${answer.answer}.\n${evidenceText}`);
+    }
+
     const rawMatches = findMatchingMessages(
       message,
       dateRange,
