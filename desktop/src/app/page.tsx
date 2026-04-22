@@ -3,39 +3,109 @@ import Link from 'next/link';
 export default function Home() {
   return (
     <div className="container">
-      <h1 className="title">Personal Assistant</h1>
-      <p className="subtitle">Fully on-device AI assistant. Private, fast, secure.</p>
+      <div style={{ marginBottom: '4rem' }}>
+        <h1 className="title">Personal Assistant</h1>
+        <p className="subtitle">Private AI assistant. Your data stays on your device.</p>
+      </div>
 
       <div className="grid-cards">
         <Link href="/whatsapp" className="card">
-          <div className="card-title">📱 WhatsApp Agent</div>
-          <p style={{ color: 'var(--text-muted)' }}>
-            Import your chat exports. Ask questions locally using Ollama/MLX.
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
+            <div style={{ 
+              width: '40px', 
+              height: '40px', 
+              borderRadius: '10px', 
+              background: 'var(--bg-hover)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.25rem',
+              fontWeight: 600,
+              color: 'var(--text-secondary)'
+            }}>
+              W
+            </div>
+            <div className="card-title" style={{ margin: 0 }}>WhatsApp</div>
+          </div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', lineHeight: 1.5 }}>
+            Import chat exports and search your message history locally.
           </p>
         </Link>
         
         <Link href="/notes" className="card">
-          <div className="card-title">📝 Apple Notes Agent</div>
-          <p style={{ color: 'var(--text-muted)' }}>
-            Import your notes. Semantic search and conversational Q&A.
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
+            <div style={{ 
+              width: '40px', 
+              height: '40px', 
+              borderRadius: '10px', 
+              background: 'var(--bg-hover)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.25rem',
+              fontWeight: 600,
+              color: 'var(--text-secondary)'
+            }}>
+              N
+            </div>
+            <div className="card-title" style={{ margin: 0 }}>Notes</div>
+          </div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', lineHeight: 1.5 }}>
+            Import and search through your notes with semantic understanding.
           </p>
         </Link>
         
         <Link href="/emails" className="card">
-          <div className="card-title">📧 Gmail Agent</div>
-          <p style={{ color: 'var(--text-muted)' }}>
-            Connect to Gmail API for smart sorting and quick replies.
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
+            <div style={{ 
+              width: '40px', 
+              height: '40px', 
+              borderRadius: '10px', 
+              background: 'var(--bg-hover)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.25rem',
+              fontWeight: 600,
+              color: 'var(--text-secondary)'
+            }}>
+              G
+            </div>
+            <div className="card-title" style={{ margin: 0 }}>Gmail</div>
+          </div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', lineHeight: 1.5 }}>
+            Connect to Gmail for intelligent email organization.
           </p>
         </Link>
         
-        <Link href="/search" className="card" style={{ padding: '2px', background: 'linear-gradient(45deg, var(--primary), var(--success))' }}>
-          <div style={{ background: 'var(--bg-card)', padding: '1.5rem', borderRadius: '10px', height: '100%' }}>
-            <div className="card-title" style={{ color: 'var(--success)' }}>✨ Unified Search</div>
-            <p style={{ color: 'var(--text-muted)' }}>
-              Ask anything. The agent routes your question to the right module.
-            </p>
+        <Link href="/search" className="card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
+            <div style={{ 
+              width: '40px', 
+              height: '40px', 
+              borderRadius: '10px', 
+              background: 'var(--bg-hover)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.25rem',
+              fontWeight: 600,
+              color: 'var(--text)'
+            }}>
+              /
+            </div>
+            <div className="card-title" style={{ margin: 0 }}>Search</div>
           </div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', lineHeight: 1.5 }}>
+            Ask anything across all your connected data sources.
+          </p>
         </Link>
+      </div>
+
+      <div style={{ marginTop: '4rem', paddingTop: '2rem', borderTop: '1px solid var(--border)' }}>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+          Powered by local LLM • No data leaves your device
+        </p>
       </div>
     </div>
   );

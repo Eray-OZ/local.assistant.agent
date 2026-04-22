@@ -95,6 +95,24 @@ export default function WhatsAppPage() {
     setQuery('');
   };
 
+  const handleDeleteSession = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (!confirm('Delete this chat?')) return;
+    
+    try {
+      const res = await fetch(`/api/chats/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        if (activeSessionId === id) {
+          setActiveSessionId(null);
+          setChatLog([]);
+        }
+        loadSessions();
+      }
+    } catch (e) {
+      console.error('Failed to delete session', e);
+    }
+  };
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatLog]);
@@ -263,151 +281,295 @@ export default function WhatsAppPage() {
   };
 
   return (
-    <div className="container" style={{ maxWidth: '1400px' }}>
-      <div style={{ marginBottom: '1rem' }}>
-        <Link href="/" style={{ color: 'var(--primary)', textDecoration: 'none' }}>&larr; Back to Dashboard</Link>
+    <div className="container" style={{ maxWidth: '1400px', padding: '1.5rem' }}>
+      {/* Header */}
+      <div style={{ marginBottom: '1.5rem' }}>
+        <Link href="/" className="nav-link" style={{ marginBottom: '1rem', display: 'inline-flex' }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '0.5rem' }}>
+            <path d="M19 12H5M12 19l-7-7 7-7"/>
+          </svg>
+          Back
+        </Link>
+        <div className="section-header" style={{ marginTop: '1rem', marginBottom: 0 }}>
+          <div className="section-title">WhatsApp</div>
+          <div className="section-subtitle">Search through your chat history</div>
+        </div>
       </div>
 
-      <div style={{ display: 'flex', gap: '1.5rem', height: '85vh' }}>
+      <div style={{ display: 'flex', gap: '1rem', height: 'calc(100vh - 200px)', minHeight: '500px' }}>
         
-        {/* Sidebar: Chat Sessions */}
-        <div className="card" style={{ width: '280px', display: 'flex', flexDirection: 'column', padding: '1rem' }}>
-          <button 
-            onClick={handleNewChat}
-            className="btn btn-primary" 
-            style={{ width: '100%', marginBottom: '1rem', background: 'transparent', border: '1px solid var(--primary)', color: 'var(--primary)' }}
-          >
-            + Yeni Sohbet
-          </button>
-          
-          <h4 style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-            Geçmiş Sohbetler
-          </h4>
-          
-          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            {sessions.length === 0 ? (
-              <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Henüz sohbet yok.</span>
-            ) : (
-              sessions.map(s => (
-                <div 
-                  key={s.id} 
-                  onClick={() => loadSession(s.id)}
-                  style={{ 
-                    padding: '0.75rem', 
-                    borderRadius: '8px', 
-                    cursor: 'pointer',
-                    background: activeSessionId === s.id ? 'var(--bg-hover)' : 'transparent',
-                    borderLeft: activeSessionId === s.id ? '3px solid var(--primary)' : '3px solid transparent',
-                    color: 'var(--text)',
-                    fontSize: '0.9rem',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis'
-                  }}
-                >
-                  {s.title}
+        {/* Sidebar */}
+        <div style={{ width: '260px', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {/* Status Card */}
+          <div className="card" style={{ padding: '1rem' }}>
+            {dbLoaded ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ 
+                  width: '8px', 
+                  height: '8px', 
+                  borderRadius: '50%', 
+                  background: 'var(--success)' 
+                }} />
+                <div>
+                  <div style={{ fontSize: '0.875rem', fontWeight: 500, color: 'var(--text)' }}>
+                    Database Active
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    {dbRows.toLocaleString()} chunks indexed
+                  </div>
                 </div>
-              ))
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: '0.875rem', fontWeight: 500, color: 'var(--text)', marginBottom: '0.5rem' }}>
+                  No data loaded
+                </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
+                  Upload your WhatsApp chat export to get started.
+                </p>
+              </div>
             )}
+            
+            <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <input 
+                type="file" 
+                accept=".txt" 
+                onChange={handleFileChange}
+                style={{ fontSize: '0.75rem', flex: 1, minWidth: 0 }}
+              />
+              <button 
+                onClick={handleUpload} 
+                disabled={!file || loading}
+                className="btn btn-primary"
+                style={{ padding: '0.375rem 0.75rem', fontSize: '0.75rem', flexShrink: 0 }}
+              >
+                {loading ? '...' : 'Import'}
+              </button>
+            </div>
+          </div>
+
+          {/* Sessions */}
+          <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+              <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Chats
+              </span>
+              <button 
+                onClick={handleNewChat}
+                className="btn btn-secondary"
+                style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+              >
+                New
+              </button>
+            </div>
+            
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+              {sessions.length === 0 ? (
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>No chats yet.</span>
+              ) : (
+                sessions.map(s => (
+                  <div 
+                    key={s.id} 
+                    onClick={() => loadSession(s.id)}
+                    style={{ 
+                      padding: '0.625rem 0.75rem', 
+                      borderRadius: 'var(--radius-sm)', 
+                      cursor: 'pointer',
+                      background: activeSessionId === s.id ? 'var(--bg-active)' : 'transparent',
+                      color: activeSessionId === s.id ? 'var(--text)' : 'var(--text-secondary)',
+                      fontSize: '0.875rem',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      transition: 'all 0.15s ease',
+                      border: '1px solid transparent',
+                      borderColor: activeSessionId === s.id ? 'var(--border-active)' : 'transparent',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '0.5rem'
+                    }}
+                  >
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</span>
+                    <button
+                      onClick={(e) => handleDeleteSession(e, s.id)}
+                      title="Delete chat"
+                      style={{
+                        padding: '0.25rem',
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: 'var(--text)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        opacity: 0.4,
+                        transition: 'all 0.15s ease',
+                        borderRadius: '4px',
+                        flexShrink: 0
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.opacity = '1';
+                        e.currentTarget.style.color = 'var(--error)';
+                        e.currentTarget.style.background = 'var(--error-bg)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.opacity = '0.4';
+                        e.currentTarget.style.color = 'var(--text)';
+                        e.currentTarget.style.background = 'transparent';
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
 
         {/* Main Chat Area */}
-        <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1.5rem' }}>
+        <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
           
-          {/* Top Banner for DB Loading */}
-          {dbLoaded ? (
-            <div style={{ background: 'var(--bg-hover)', padding: '0.75rem', borderRadius: '8px', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <span style={{ color: 'var(--primary)', marginRight: '0.5rem' }}>✅</span>
-                <span style={{ fontSize: '0.9rem', color: 'var(--text)' }}>Veritabanı Aktif ({dbRows} blok)</span>
-              </div>
-              <div>
-                 <input type="file" accept=".txt" onChange={handleFileChange} style={{ fontSize: '0.75rem', width: '180px' }} />
-                 <button onClick={handleUpload} disabled={!file || loading} style={{ fontSize: '0.75rem', padding: '0.25rem 0.5rem', borderRadius: '4px', background: 'var(--primary)', border: 'none', color: '#11111b', cursor: 'pointer' }}>
-                   {loading ? '...' : 'Üstüne Yaz'}
-                 </button>
-              </div>
-            </div>
-          ) : (
-            <div style={{ background: 'rgba(243, 139, 168, 0.1)', border: '1px solid #f38ba8', padding: '1rem', borderRadius: '8px', marginBottom: '1rem' }}>
-              <p style={{ color: '#f38ba8', marginBottom: '0.5rem', margin: 0 }}>⚠️ WhatsApp veritabanı boş. Lütfen sohbet geçmişinizi (.txt) yükleyin.</p>
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
-                 <input type="file" accept=".txt" onChange={handleFileChange} style={{ color: 'var(--text)' }} />
-                 <button onClick={handleUpload} disabled={!file || loading} className="btn btn-primary" style={{ padding: '0.25rem 1rem' }}>
-                   {loading ? 'İşleniyor...' : 'Yükle'}
-                 </button>
-              </div>
-            </div>
-          )}
-
-          {status ? (
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>
-              {status}
-            </div>
-          ) : null}
-
-          {/* Chat Transcript */}
+          {/* Messages */}
           <div style={{ 
               flex: 1, 
-              background: 'rgba(0,0,0,0.2)', 
-              borderRadius: '8px', 
+              background: 'var(--bg)', 
               padding: '1.5rem', 
-              overflowY: 'auto', 
-              marginBottom: '1rem',
+              overflowY: 'auto',
               display: 'flex',
               flexDirection: 'column',
-              gap: '1.5rem'
+              gap: '1rem'
             }}>
              {chatLog.length === 0 ? (
-                <div style={{ color: 'var(--text-muted)', textAlign: 'center', margin: 'auto', maxWidth: '400px' }}>
-                    <h3>Tüm Hatıralarınız Burada</h3>
-                    <p>Ne aramak istediğinizi yazın. RAG destekli AI asistanınız sizin için bulup özetleyecektir.</p>
+                <div style={{ 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  height: '100%',
+                  color: 'var(--text-muted)',
+                  textAlign: 'center'
+                }}>
+                  <div style={{ 
+                    width: '48px', 
+                    height: '48px', 
+                    borderRadius: '12px', 
+                    background: 'var(--bg-card)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: '1rem',
+                    fontSize: '1.5rem',
+                    fontWeight: 600
+                  }}>
+                    W
+                  </div>
+                  <h3 style={{ fontSize: '1rem', fontWeight: 500, color: 'var(--text)', marginBottom: '0.5rem' }}>
+                    Start a conversation
+                  </h3>
+                  <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '300px' }}>
+                    Ask about your messages. Try: "What did we discuss last week?" or "Find messages about dinner plans."
+                  </p>
                 </div>
              ) : (
                 chatLog.map((log, i) => (
-                    <div key={i} style={{ 
-                        alignSelf: log.role === 'user' ? 'flex-end' : 'flex-start',
-                        background: log.role === 'user' ? 'var(--primary)' : 'var(--bg-hover)',
-                        color: log.role === 'user' ? '#11111b' : 'var(--text)',
-                        padding: '1rem 1.25rem',
-                        borderRadius: '16px',
-                        borderBottomRightRadius: log.role === 'user' ? '4px' : '16px',
-                        borderBottomLeftRadius: log.role === 'agent' ? '4px' : '16px',
-                        maxWidth: '85%',
-                        whiteSpace: 'pre-wrap',
-                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-                        lineHeight: '1.5'
+                  <div key={i} style={{ 
+                      alignSelf: log.role === 'user' ? 'flex-end' : 'flex-start',
+                      maxWidth: '80%'
+                  }}>
+                    <div style={{
+                      background: log.role === 'user' ? 'var(--primary)' : 'var(--bg-card)',
+                      color: log.role === 'user' ? 'var(--bg)' : 'var(--text)',
+                      padding: '0.875rem 1rem',
+                      borderRadius: '12px',
+                      fontSize: '0.9375rem',
+                      lineHeight: 1.5,
+                      whiteSpace: 'pre-wrap',
+                      border: log.role === 'user' ? 'none' : '1px solid var(--border)'
                     }}>
-                        {log.content}
+                      {log.content ? (
+                        log.content
+                      ) : chatting && i === chatLog.length - 1 && log.role === 'agent' ? (
+                        <span style={{ 
+                          color: 'var(--text-muted)', 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: '0.5rem' 
+                        }}>
+                          <span style={{
+                            width: '4px',
+                            height: '4px',
+                            background: 'var(--text-muted)',
+                            borderRadius: '50%',
+                            animation: 'pulse 1.4s ease-in-out infinite'
+                          }} />
+                          <span style={{
+                            width: '4px',
+                            height: '4px',
+                            background: 'var(--text-muted)',
+                            borderRadius: '50%',
+                            animation: 'pulse 1.4s ease-in-out infinite 0.2s'
+                          }} />
+                          <span style={{
+                            width: '4px',
+                            height: '4px',
+                            background: 'var(--text-muted)',
+                            borderRadius: '50%',
+                            animation: 'pulse 1.4s ease-in-out infinite 0.4s'
+                          }} />
+                        </span>
+                      ) : null}
                     </div>
+                  </div>
                 ))
              )}
              <div ref={chatEndRef} />
           </div>
 
-          {/* Input Area */}
-          <form onSubmit={handleChat} style={{ display: 'flex', gap: '0.75rem' }}>
-            <input 
-              type="text" 
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Sohbete bir şeyler yazın..." 
-              style={{
-                flex: 1,
-                padding: '1rem',
-                borderRadius: '12px',
-                border: '1px solid var(--border)',
-                background: 'rgba(0,0,0,0.3)',
-                color: 'var(--text)',
-                outline: 'none',
-                fontSize: '1rem'
-              }}
-            />
-            <button type="submit" className="btn btn-primary" disabled={chatting || !query.trim()} style={{ padding: '0 2rem', borderRadius: '12px' }}>
-              {chatting ? '...' : 'Gönder'}
-            </button>
-          </form>
+          {/* Input */}
+          <div style={{ 
+            padding: '1rem 1.5rem', 
+            borderTop: '1px solid var(--border)',
+            background: 'var(--bg-card)'
+          }}>
+            <form onSubmit={handleChat} style={{ display: 'flex', gap: '0.75rem' }}>
+              <input 
+                type="text" 
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Ask about your messages..."
+                disabled={chatting}
+                className="input"
+                style={{
+                  flex: 1,
+                  background: 'var(--bg-elevated)'
+                }}
+              />
+              <button 
+                type="submit" 
+                className="btn btn-primary" 
+                disabled={chatting || !query.trim()}
+                style={{ padding: '0 1.25rem' }}
+              >
+                {chatting ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="12" cy="12" r="10" strokeDasharray="60" strokeDashoffset="20">
+                        <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
+                      </circle>
+                    </svg>
+                  </span>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                  </svg>
+                )}
+              </button>
+            </form>
+          </div>
 
         </div>
       </div>
