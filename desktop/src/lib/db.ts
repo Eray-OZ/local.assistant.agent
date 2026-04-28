@@ -89,11 +89,16 @@ initializeWhatsAppFts();
 
 // Migrations — safe to run on every startup
 function runMigrations() {
-  // Add filename column to embedding_jobs if it doesn't exist (added after initial release)
-  const columns = db.pragma('table_info(embedding_jobs)') as { name: string }[];
-  const hasFilename = columns.some((col) => col.name === 'filename');
-  if (!hasFilename) {
+  // Add filename column to embedding_jobs if it doesn't exist
+  const ejColumns = db.pragma('table_info(embedding_jobs)') as { name: string }[];
+  if (!ejColumns.some((col) => col.name === 'filename')) {
     db.exec('ALTER TABLE embedding_jobs ADD COLUMN filename TEXT;');
+  }
+
+  // Add is_forwarded column to whatsapp_messages if it doesn't exist
+  const wmColumns = db.pragma('table_info(whatsapp_messages)') as { name: string }[];
+  if (!wmColumns.some((col) => col.name === 'is_forwarded')) {
+    db.exec('ALTER TABLE whatsapp_messages ADD COLUMN is_forwarded INTEGER DEFAULT 0;');
   }
 }
 

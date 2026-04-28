@@ -88,15 +88,22 @@ export async function POST(request: Request) {
     const intent = await parseQueryIntent(message, resolvedModel);
     const directMessageRequest = isDirectMessageRequest(intent);
 
+    // If it's a request for 'another' message, skip some results
+    const offset = intent.isAnotherRequest ? Math.floor(Math.random() * 3) + 1 : 0;
+
     // Search with parsed intent
     const rawMatches = await findMatchingMessages(
       intent,
-      directMessageRequest ? 5 : 20
+      directMessageRequest ? 5 : 20,
+      offset
     );
 
     if (directMessageRequest) {
       if (rawMatches.length === 0) {
-        return streamTextResponse('Maalesef bu tarihte/konuda mesaj bulunamadi. Lutfen farkli bir tarih veya anahtar kelime deneyin.');
+        const fallbackMsg = offset > 0 
+          ? 'Baska mesaj bulunamadi.' 
+          : 'Maalesef bu tarihte/konuda mesaj bulunamadi. Lutfen farkli bir tarih veya anahtar kelime deneyin.';
+        return streamTextResponse(fallbackMsg);
       }
 
       return streamTextResponse(formatMatchedMessage(rawMatches[0]));

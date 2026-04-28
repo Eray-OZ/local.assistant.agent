@@ -21,6 +21,7 @@ export interface MatchedMessage {
   content: string;
   parsedDate: Date | null;
   score: number;
+  isForwarded: boolean;
 }
 
 const IGNORED_MESSAGE_PATTERNS = [
@@ -58,9 +59,19 @@ function tokenize(text: string): string[] {
     .filter(Boolean);
 }
 
-function isWithinRange(date: Date | null, range: DateRange | null): boolean {
+function isWithinRange(date: Date | null, range: (DateRange & { ignoreYear?: boolean }) | null): boolean {
   if (!range) return true;
   if (!date) return false;
+  
+  if (range.ignoreYear) {
+    const startObj = new Date(range.start);
+    const dateMonth = date.getMonth();
+    const dateDay = date.getDate();
+    const startMonth = startObj.getMonth();
+    const startDay = startObj.getDate();
+    return dateMonth === startMonth && dateDay === startDay;
+  }
+
   const ts = date.getTime();
   return ts >= Date.parse(range.start) && ts < Date.parse(range.end);
 }
@@ -71,18 +82,18 @@ function escapeFtsToken(token: string): string {
 
 function buildFtsQuery(searchTerms: string[]): string | null {
   if (searchTerms.length === 0) return null;
-  
+
   // Build query with prefix wildcards for Turkish suffix handling
   // "pizza" -> "pizza*" (matches "pizza", "pizzayı", "pizzadan")
   const clauses = searchTerms.map((term) => {
     const safe = escapeFtsToken(term);
     return `${safe}*`;
   });
-  
+
   return clauses.join(' AND ');
 }
 
-function fetchFtsCandidates(matchQuery: string, limit: number): FtsCandidate[] {
+function fetchFtsCandidates(matchQuery: string, limit: number, offset = 0): FtsCandidate[] {
   ensureWhatsAppSearchIndex();
 
   const stmt = db.prepare(`
@@ -91,7 +102,8 @@ function fetchFtsCandidates(matchQuery: string, limit: number): FtsCandidate[] {
       m.message_date,
       m.sender,
       m.content,
-      f.lexical_rank
+      f.lexical_rank,
+      m.is_forwarded
     FROM (
       SELECT
         message_id,
@@ -99,36 +111,38 @@ function fetchFtsCandidates(matchQuery: string, limit: number): FtsCandidate[] {
       FROM whatsapp_messages_fts
       WHERE whatsapp_messages_fts MATCH ?
       ORDER BY lexical_rank
-      LIMIT ?
+      LIMIT ? OFFSET ?
     ) AS f
     JOIN whatsapp_messages AS m ON m.id = f.message_id
     ORDER BY f.lexical_rank, m.id DESC
   `);
 
-  return stmt.all(matchQuery, limit) as FtsCandidate[];
+  return stmt.all(matchQuery, limit, offset) as (FtsCandidate & { is_forwarded: number })[];
 }
 
 function fetchFallbackCandidates(): StoredMessage[] {
   return db
-    .prepare('SELECT id, message_date, sender, content FROM whatsapp_messages ORDER BY id ASC')
-    .all() as StoredMessage[];
+    .prepare('SELECT id, message_date, sender, content, is_forwarded FROM whatsapp_messages ORDER BY id ASC')
+    .all() as (StoredMessage & { is_forwarded: number })[];
 }
 
-export function formatMatchedMessage(message: Pick<MatchedMessage, 'messageDate' | 'sender' | 'content'>): string {
+export function formatMatchedMessage(message: Pick<MatchedMessage, 'messageDate' | 'sender' | 'content' | 'isForwarded'>): string {
   const sender = message.sender?.trim() || 'Bilinmeyen';
-  return `[${message.messageDate}] ${sender}: ${cleanMessageContent(message.content)}`;
+  const forwardTag = message.isForwarded ? '[İLETİLDİ] ' : '';
+  return `[${message.messageDate}] ${sender}: ${forwardTag}${cleanMessageContent(message.content)}`;
 }
 
 export async function findMatchingMessages(
   intent: QueryIntent,
-  limit = 20
+  limit = 20,
+  offset = 0
 ): Promise<MatchedMessage[]> {
   const { searchTerms, dateRange, sender } = intent;
-  
+
   // Build FTS query from search terms
   const ftsQuery = buildFtsQuery(searchTerms);
   const candidateRows = ftsQuery
-    ? fetchFtsCandidates(ftsQuery, Math.max(limit * 5, 50))
+    ? fetchFtsCandidates(ftsQuery, Math.max(limit * 5, 50), offset)
     : fetchFallbackCandidates();
 
   const ranked = candidateRows
@@ -136,7 +150,7 @@ export async function findMatchingMessages(
       const cleanedContent = cleanMessageContent(row.content);
       const contentTokens = tokenize(cleanedContent);
       const parsedDate = parseWhatsAppDate(row.message_date);
-      
+
       // Calculate term match score
       let termHits = 0;
       if (searchTerms.length > 0) {
@@ -148,24 +162,22 @@ export async function findMatchingMessages(
           return score + (matches ? matches.length : 0);
         }, 0);
       }
-      
+
       // Sender matching
       let senderHit = true;
       if (sender) {
-        const normalizedSender = row.sender.toLowerCase();
-        // Handle aliases
-        if (sender === 'ben') {
-          senderHit = normalizedSender.includes('eray') || normalizedSender.includes('ben');
-        } else if (sender === 'sevgilim') {
-          senderHit = normalizedSender.includes('sevgilim') || normalizedSender.includes('kiz arkadas');
-        } else {
-          senderHit = normalizedSender.includes(sender.toLowerCase());
-        }
+        const normalizedSender = row.sender.toLowerCase().replace(/[^\wçğıöşü]/g, ' ').trim();
+        const searchSender = sender.toLowerCase().replace(/[^\wçğıöşü]/g, ' ').trim();
+
+        // If LLM identifies 'me/user' or 'partner', we match by checking substrings
+        // No longer limiting to specific names like 'eray'
+        const senderWords = searchSender.split(/\s+/);
+        senderHit = senderWords.some(word => normalizedSender.includes(word));
       }
-      
+
       // Date boost
       const dateBoost = dateRange && isWithinRange(parsedDate, dateRange) ? 1000 : 0;
-      
+
       const lexicalRank =
         'lexical_rank' in row && typeof row.lexical_rank === 'number'
           ? row.lexical_rank
@@ -178,6 +190,7 @@ export async function findMatchingMessages(
         content: cleanedContent,
         parsedDate,
         score: termHits + dateBoost,
+        isForwarded: Boolean((row as any).is_forwarded),
         termHits,
         senderHit,
         lexicalRank,

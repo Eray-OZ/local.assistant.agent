@@ -18,6 +18,7 @@ const MONTHS: Record<string, number> = {
 export interface DateRange {
   start: string;
   end: string;
+  ignoreYear?: boolean;
 }
 
 function createDayRange(year: number, month: number, day: number): DateRange | null {
@@ -25,6 +26,15 @@ function createDayRange(year: number, month: number, day: number): DateRange | n
   if (Number.isNaN(start.getTime())) return null;
   const end = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
   return { start: start.toISOString(), end: end.toISOString() };
+}
+
+// When year is not specified, search across multiple years (last 2 years)
+function createDayRangeMultiYear(month: number, day: number): DateRange | null {
+  const currentYear = new Date().getFullYear();
+  const start = new Date(currentYear, month - 1, day, 0, 0, 0, 0);
+  if (Number.isNaN(start.getTime())) return null;
+  const end = new Date(currentYear, month - 1, day + 1, 0, 0, 0, 0);
+  return { start: start.toISOString(), end: end.toISOString(), ignoreYear: true };
 }
 
 function createMonthRange(year: number, month: number): DateRange | null {
@@ -53,7 +63,20 @@ export function extractDateRange(query: string): DateRange | null {
   );
   if (dayMonthYearMatch) {
     const [, day, monthName, year] = dayMonthYearMatch;
-    return createDayRange(Number(year ?? currentYear), MONTHS[monthName], Number(day));
+    if (year) {
+      return createDayRange(Number(year), MONTHS[monthName], Number(day));
+    }
+    // Year not specified - search across multiple years
+    return createDayRangeMultiYear(MONTHS[monthName], Number(day));
+  }
+
+  // Ay + Gün (e.g., "Nisan 19") - yıl yoksa multiple years
+  const monthDayMatch = normalized.match(
+    /\b(ocak|subat|mart|nisan|mayis|haziran|temmuz|agustos|eylul|ekim|kasim|aralik)\s+(\d{1,2})\b/
+  );
+  if (monthDayMatch) {
+    const [, monthName, day] = monthDayMatch;
+    return createDayRangeMultiYear(MONTHS[monthName], Number(day));
   }
 
   const monthYearMatch = normalized.match(
